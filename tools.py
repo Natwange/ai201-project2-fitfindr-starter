@@ -69,8 +69,41 @@ def search_listings(
 
     Before writing code, fill in the Tool 1 section of planning.md.
     """
-    # Replace this with your implementation
-    return []
+    listings = load_listings()
+
+    # Keywords from the user's description (lowercased, deduped).
+    keywords = {word for word in description.lower().split() if word}
+
+    results = []
+    for listing in listings:
+        # 1. Price filter (inclusive). Skip listings over the ceiling.
+        if max_price is not None and listing["price"] > max_price:
+            continue
+
+        # 2. Size filter (case-insensitive substring, so "M" matches "S/M").
+        if size is not None:
+            if size.strip().lower() not in listing["size"].lower():
+                continue
+
+        # 3. Score by keyword overlap across the text-bearing fields.
+        haystack = " ".join([
+            listing["title"],
+            listing["description"],
+            listing["category"],
+            " ".join(listing["style_tags"]),
+            " ".join(listing["colors"]),
+            listing["brand"] or "",
+        ]).lower()
+
+        score = sum(1 for kw in keywords if kw in haystack)
+
+        # 4. Drop listings with no keyword overlap.
+        if score > 0:
+            results.append((score, listing))
+
+    # 5. Sort by score (highest first) and return up to the top 3 listings.
+    results.sort(key=lambda pair: pair[0], reverse=True)
+    return [listing for _score, listing in results[:3]]
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
