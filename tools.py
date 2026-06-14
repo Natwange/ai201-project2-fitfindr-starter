@@ -21,6 +21,9 @@ from utils.data_loader import load_listings
 
 load_dotenv()
 
+# Groq model used for the LLM-backed tools. Change here to swap models.
+GROQ_MODEL = "llama-3.3-70b-versatile"
+
 
 # ── Groq client ───────────────────────────────────────────────────────────────
 
@@ -133,8 +136,53 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
 
     Before writing code, fill in the Tool 2 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    client = _get_groq_client()
+
+    item_desc = (
+        f"{new_item.get('title', 'the item')} "
+        f"(category: {new_item.get('category', 'unknown')}, "
+        f"colors: {', '.join(new_item.get('colors', [])) or 'n/a'}, "
+        f"style: {', '.join(new_item.get('style_tags', [])) or 'n/a'})"
+    )
+
+    items = wardrobe.get("items", [])
+    if not items:
+        # Empty wardrobe: ask for general styling ideas, no named pieces.
+        prompt = (
+            f"A shopper is considering this secondhand item: {item_desc}.\n"
+            "They haven't shared their wardrobe yet. Suggest how to style this "
+            "piece in general terms — what kinds of items pair well with it, what "
+            "vibe it suits, and one or two complete outfit ideas. Keep it to a "
+            "short, friendly paragraph."
+        )
+    else:
+        # Format the wardrobe so the model can reference pieces by name.
+        wardrobe_lines = "\n".join(
+            f"- {it['name']} ({it.get('category', '')}; "
+            f"{', '.join(it.get('style_tags', []))})"
+            for it in items
+        )
+        prompt = (
+            f"A shopper is considering this secondhand item: {item_desc}.\n\n"
+            f"Here is their current wardrobe:\n{wardrobe_lines}\n\n"
+            "Suggest 1-2 complete outfits that pair the new item with specific "
+            "pieces from their wardrobe, referring to those pieces by name. "
+            "Mention how to wear it (tuck, layer, roll, etc.) and the overall "
+            "vibe. Keep it to a short, friendly paragraph or two."
+        )
+
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are FitFindr, a thrift-savvy personal stylist.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.7,
+    )
+    return response.choices[0].message.content.strip()
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
@@ -166,5 +214,37 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
     Before writing code, fill in the Tool 3 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    # 1. Guard against an empty or whitespace-only outfit string.
+    if not outfit or not outfit.strip():
+        return "Can't create a fit card yet — no outfit suggestion was provided."
+
+    client = _get_groq_client()
+
+    title = new_item.get("title", "this find")
+    price = new_item.get("price")
+    price_str = f"${price:.0f}" if isinstance(price, (int, float)) else "a steal"
+    platform = new_item.get("platform", "secondhand")
+
+    prompt = (
+        f"Write a short, shareable Instagram/TikTok-style caption for an outfit.\n\n"
+        f"Item: {title}\n"
+        f"Price: {price_str}\n"
+        f"Platform: {platform}\n"
+        f"Outfit: {outfit}\n\n"
+        "Write 2-4 sentences. It should feel like a real OOTD post, not a product "
+        "description. Mention the item name, price, and platform naturally (once "
+        "each). Capture the outfit vibe in specific terms. Casual and authentic."
+    )
+
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": "You write casual, authentic thrift-haul outfit captions.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.9,  # higher temp → captions vary across runs
+    )
+    return response.choices[0].message.content.strip()
