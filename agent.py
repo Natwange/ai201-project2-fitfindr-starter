@@ -18,7 +18,58 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
+
+
+# ── query parsing ─────────────────────────────────────────────────────────────
+
+def _parse_query(query: str) -> dict:
+    """
+    Extract description, size, and max_price from a natural-language query
+    using regex. Returns a dict with keys: description, size, max_price.
+
+    Examples:
+        "vintage graphic tee under $30, size M"
+            → {"description": "vintage graphic tee", "size": "M", "max_price": 30.0}
+        "designer ballgown size XXS under $5"
+            → {"description": "designer ballgown", "size": "XXS", "max_price": 5.0}
+    """
+    text = query.strip()
+
+    # max_price: "under $30", "below 30", "< $30", or "$30". Require a price
+    # keyword or a "$" so digits inside a size token (e.g. "W30") aren't read
+    # as a price.
+    max_price = None
+    price_pattern = r"(?:under|below|less than|<|max(?:imum)?|\$)\s*\$?\s*(\d+(?:\.\d{1,2})?)"
+    price_match = re.search(price_pattern, text, re.IGNORECASE)
+    if price_match:
+        max_price = float(price_match.group(1))
+
+    # size: "size M", "size XXS", "size S/M", "size W30 L30". Capture the size
+    # token, plus an optional length token (e.g. "L30") for waist/length sizing.
+    size = None
+    size_pattern = r"size\s+([A-Za-z0-9/]+(?:\s+L\d+)?)"
+    size_match = re.search(size_pattern, text, re.IGNORECASE)
+    if size_match:
+        size = size_match.group(1).strip()
+
+    # description: strip out the size and price phrases plus common filler so
+    # only the item keywords remain for search_listings to score against.
+    description = text
+    description = re.sub(size_pattern, "", description, flags=re.IGNORECASE)
+    description = re.sub(price_pattern, "", description, flags=re.IGNORECASE)
+    description = re.sub(
+        r"\b(i'?m|i am|looking for|a|an|the|please|find me|searching for|want)\b",
+        "",
+        description,
+        flags=re.IGNORECASE,
+    )
+    description = re.sub(r"[,.]", " ", description)
+    description = re.sub(r"\s+", " ", description).strip()
+
+    return {"description": description, "size": size, "max_price": max_price}
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -92,9 +143,57 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    # Step 1: fresh session.
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2: parse the query into description / size / max_price.
+    parsed = _parse_query(query)
+    session["parsed"] = parsed
+
+    # Step 3: search for matching listings.
+    results = search_listings(
+        description=parsed["description"],
+        size=parsed["size"],
+        max_price=parsed["max_price"],
+    )
+    session["search_results"] = results
+
+    # Error branch: no matches → advise and stop. Do NOT call suggest_outfit.
+    if not results:
+        session["error"] = (
+            "No listings matched your search. Try broadening the description, "
+            "removing the size filter, or raising your maximum price."
+        )
+        return session
+
+    # Step 4: select the top result.
+    session["selected_item"] = results[0]
+
+    # Step 5: suggest an outfit from the user's wardrobe.
+    try:
+        outfit = suggest_outfit(session["selected_item"], wardrobe)
+    except Exception as exc:  # API/network failure — fail gracefully
+        session["error"] = f"Could not generate an outfit suggestion: {exc}"
+        return session
+
+    if not outfit or not outfit.strip():
+        session["error"] = "Could not generate an outfit suggestion for this item."
+        return session
+    session["outfit_suggestion"] = outfit
+
+    # Step 6: turn the approved outfit into a shareable fit card.
+    try:
+        fit_card = create_fit_card(outfit, session["selected_item"])
+    except Exception as exc:
+        session["error"] = f"Could not create a fit card: {exc}"
+        return session
+
+    if not fit_card or not fit_card.strip():
+        session["error"] = "Could not create a fit card for this outfit."
+        return session
+    session["fit_card"] = fit_card
+
+    # Step 7: success — error stays None.
     return session
 
 
@@ -106,6 +205,18 @@ if __name__ == "__main__":
     print("=== Happy path: graphic tee ===\n")
     session = run_agent(
         query="looking for a vintage graphic tee under $30",
+        wardrobe=get_example_wardrobe(),
+    )
+    if session["error"]:
+        print(f"Error: {session['error']}")
+    else:
+        print(f"Found: {session['selected_item']['title']}")
+        print(f"\nOutfit: {session['outfit_suggestion']}")
+        print(f"\nFit card: {session['fit_card']}")
+
+    print("\n\n=== Deliberate Fail path: designer ballgown ===\n")
+    session = run_agent(
+        query="looking for a designer ballgown size XXS under $5",
         wardrobe=get_example_wardrobe(),
     )
     if session["error"]:
